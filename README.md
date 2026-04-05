@@ -197,7 +197,7 @@ No help is offered, these are available on a take-it-or-leave-it basis.
 
 However, I do invite corrections, improvements, etc.  Please submit a PR.
 
-### LICENSE
+### LICENCE
 
-MIT licenced, so you can do pretty much anything with it. See LICENCE.md
+MIT licenced, so you can do pretty much anything with it. See LICENSE.md (sic).
 
