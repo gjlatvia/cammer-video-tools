@@ -50,7 +50,7 @@ There may be some other dependencies I've forgotten, please let me know of any t
 
 I use either yt-dlp (via `cbb`) or the Chrome extension Capturables.
 
-#### Stripchat
+### Stripchat
 
 `yt-dlp` doesn't work with SC, so use Capturables.
 
@@ -74,13 +74,13 @@ Usage:
 
 The output file with then be
 
-``cbbroadcaster-name keyword1 keyword2 keyword3 20260406.mp4` (for example)
+`broadcaster-name keyword1 keyword2 keyword3 20260406.mp4` (for example)
 
 If you don't give it a date, it'll use today.
 
 Any number of keywords - I usually give a brief description like `spy boobs oil panties tease` or whatever, so output might be something like:
 
-``svetlana_sikorsky spy boobs oil panties tease 20260406.mp4`
+`svetlana_sikorsky spy boobs oil panties tease 20260406.mp4`
 
 ### Upload
 
