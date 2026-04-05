@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+
+# vgif — make a slow 10s GIF summarising an entire video
+# Samples evenly across the full duration, scales to ~800 px wide, keeps aspect.
+
+set -eu
+
+# ---- helpers ---------------------------------------------------------------
+
+err() { printf '%s\n' "$*" >&2; }
+
+need() { command -v "$1" >/dev/null 2>&1 || { err "Missing dependency: $1"; exit 127; }; }
+
+# Run a command; silence output unless VGIF_DEBUG is set
+run() {
+  if [ -n "${VGIF_DEBUG:-}" ]; then
+    "$@"
+  else
+    "$@" >/dev/null 2>&1
+  fi
+}
+
+# ---- defaults --------------------------------------------------------------
+
+SIZE="800x"           # width 800, auto height (keeps aspect)
+GIF_SECS="2"          # virtual "capture" window: N = GIF_FPS * GIF_SECS frames total
+GIF_FPS="15"          # capture density (15 fps → ~30 frames)
+GIF_DISPLAY_SECS="10" # playback length of final GIF (slower)
+
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") [-s WxH] [-t SAMPLE_SECS] [-F SAMPLE_FPS] [-d DISPLAY_SECS] INPUT.mp4 [OUTPUT]
+
+Defaults:
+  -s  800x      (width 800 px, height auto, preserve aspect)
+  -t  2         (sample evenly over full video using frames for 2 s @ 15 fps = 30 frames)
+  -F  15        (sampling frame density)
+  -d  10        (GIF playback duration)
+
+Examples:
+  $(basename "$0") movie.mp4
+  $(basename "$0") -s 640x movie.mp4 out.gif
+
+Set VGIF_DEBUG=1 to see ffmpeg output.
+Optionally set FFMPEG=/path/to/ffmpeg and/or FFPROBE=/path/to/ffprobe to override.
+EOF
+}
+
+# ---- options ---------------------------------------------------------------
+
+while getopts "s:t:F:d:h" opt; do
+  case "$opt" in
+    s) SIZE="$OPTARG" ;;
+    t) GIF_SECS="$OPTARG" ;;
+    F) GIF_FPS="$OPTARG" ;;
+    d) GIF_DISPLAY_SECS="$OPTARG" ;;
+    h) usage; exit 0 ;;
+    \?) usage; exit 1 ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+[ $# -ge 1 ] || { usage; exit 1; }
+IN=$1
+
+# optional explicit output filename
+if [ $# -ge 2 ] && [ -n "${2:-}" ]; then
+  OUT="$2"
+else
+  EXT=${IN##*.}
+  EXT_LC=$(printf '%s' "$EXT" | tr '[:upper:]' '[:lower:]')
+  [ "$EXT_LC" != "gif" ] || { err "Error: input is already a GIF"; exit 1; }
+  BASE=${IN%."$EXT"}
+  OUT="${BASE}.gif"
+fi
+
+# safety: never overwrite the input file
+[ "$OUT" != "$IN" ] || { err "Error: output would overwrite input"; exit 1; }
+
+# ---- deps ------------------------------------------------------------------
+
+# Allow overriding via environment, otherwise use PATH.
+FFPROBE=${FFPROBE:-}
+FFMPEG=${FFMPEG:-}
+
+if [ -n "$FFPROBE" ]; then
+  [ -x "$FFPROBE" ] || { err "FFPROBE is set but not executable: $FFPROBE"; exit 127; }
+else
+  need ffprobe
+  FFPROBE=$(command -v ffprobe)
+fi
+
+if [ -n "$FFMPEG" ]; then
+  [ -x "$FFMPEG" ] || { err "FFMPEG is set but not executable: $FFMPEG"; exit 127; }
+else
+  need ffmpeg
+  FFMPEG=$(command -v ffmpeg)
+fi
+
+# ---- derive params ---------------------------------------------------------
+
+# parse WxH (height may be blank for auto)
+TW=${SIZE%x*}
+TH=${SIZE#*x}
+
+# duration (s)
+DUR=$("$FFPROBE" -v error -show_entries format=duration -of csv=p=0 "$IN" 2>/dev/null || true)
+[ -n "$DUR" ] && [ "$DUR" != "N/A" ] || DUR=$("$FFPROBE" -v error -select_streams v:0 -show_entries stream=duration -of csv=p=0 "$IN" 2>/dev/null || true)
+
+echo "$DUR" | awk 'BEGIN{ok=0} /^[0-9]*([.][0-9]+)?$/ { if ($0>0) ok=1 } END{ exit ok?0:1 }' \
+  || { err "Error: could not read positive duration"; exit 1; }
+
+# frame plan
+N_FRAMES=$(awk -v f="$GIF_FPS" -v s="$GIF_SECS" 'BEGIN{ printf "%d", f*s }')
+STEP=$(awk -v d="$DUR" -v n="$N_FRAMES" 'BEGIN{ if (n<1)n=1; printf "%.9f", d/n }')
+
+# scale filter (handles missing height)
+if [ -z "$TH" ]; then
+  SCALE="scale=${TW}:-2"
+else
+  SCALE="scale=${TW}:${TH}:force_original_aspect_ratio=decrease,pad=${TW}:${TH}:(ow-iw)/2:(oh-ih)/2:color=black"
+fi
+
+TMPDIR=$(mktemp -d 2>/dev/null || mktemp -d -t gifframes)
+cleanup() { rm -rf "$TMPDIR"; }
+trap cleanup EXIT
+
+# ---- extract evenly spaced frames (ffmpeg output suppressed by run()) -----
+
+i=0
+while [ "$i" -lt "$N_FRAMES" ]; do
+  TS=$(awk -v i="$i" -v st="$STEP" 'BEGIN{ printf "%.9f", i*st }')
+  run "$FFMPEG" -y -ss "$TS" -i "$IN" -frames:v 1 -vf "$SCALE" \
+    "$TMPDIR/f_$(printf %03d "$i").png"
+  i=$((i+1))
+done
+
+# palette
+run "$FFMPEG" -y -framerate "$GIF_FPS" -i "$TMPDIR/f_%03d.png" \
+  -vf palettegen "$TMPDIR/pal.png"
+
+# playback rate → ~10 s default
+PLAY_FPS=$(awk -v n="$N_FRAMES" -v s="$GIF_DISPLAY_SECS" 'BEGIN{ printf "%.3f", n/s }')
+
+# assemble final GIF
+run "$FFMPEG" -y -framerate "$PLAY_FPS" -i "$TMPDIR/f_%03d.png" -i "$TMPDIR/pal.png" \
+  -lavfi paletteuse -gifflags -offsetting -loop 0 "$OUT"
+
+printf '✅ Created %s (~%ss @ %s fps, width %spx, sampled across %ss)\n' \
+  "$OUT" "$GIF_DISPLAY_SECS" "$PLAY_FPS" "$TW" "$DUR"

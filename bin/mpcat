@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+
+# mpcat outputfile.mp4 input1.mp4 input2.mp4 ...
+# Concatenate multiple MP4 files into one, using ffmpeg's concat demuxer.
+# The input files probably need to have the same codec and compatible parameters.
+# This is handy if your recording got interrupted and is in several parts.
+# It'll do a basic "jump edit" at each join.
+#
+# The output file will be created in the current directory.
+
+tmpdir=$(mktemp -d "${TMPDIR:-/tmp/}mp4-concat.XXXXXXXXXXXX")
+listfile=${tmpdir}/file.txt
+outputfile=$1
+shift
+
+>${listfile}
+echo tmpdir is ${tmpdir}, listfile is ${listfile}
+while [ "$#" -gt 0 ]; do
+    line=$(printf "file ${PWD}/%q" "$1")
+    echo ${line} >> ${listfile}
+    shift
+done
+
+echo '++++++++++++++++++++++++++++++++++++++'
+cat ${listfile}
+echo '--------------------------------------'
+ffmpeg -f concat -safe 0 -i ${listfile} -c copy ${outputfile}
+ls -l ${outputfile}
+rm ${listfile}
+rmdir ${tmpdir}

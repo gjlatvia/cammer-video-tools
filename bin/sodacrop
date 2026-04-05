@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+
+# Crops a video to 1152x648, centered horizontally and with 72 pixels cropped from the top and bottom.
+# The idea is that this crops out the Camsoda logo.  
+
+# However, it might of course crop out content that you want to keep.  Use with caution.
+# It's arguably a bit flaky.
+
+local input="$1"
+
+if [[ -z "$input" ]]; then
+    echo "Usage: sodacrop <input.mp4>" >&2
+    return 1
+fi
+
+if [[ ! -f "$input" ]]; then
+    echo "Error: file not found: $input" >&2
+    return 1
+fi
+
+local dir
+local base
+local ext
+local output
+
+dir="$(dirname "$input")"
+base="$(basename "$input")"
+ext="${base##*.}"
+base="${base%.*}"
+
+output="${dir}/${base}-cropped.${ext}"
+
+ffmpeg -i "$input" \
+    -vf "scale=1280:720,crop=1152:648:0:72" \
+    -c:v h264_videotoolbox -b:v 6M \
+    -c:a copy \
+    "$output"

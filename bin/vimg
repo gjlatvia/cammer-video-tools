@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+
+# Usage: vimg "cb-name movie.mp4" [sc-name]
+
+set -u
+
+# Set these in your environment:
+# VIMG_NRTOOL_KEY : Key for using the Nrtool API
+# VIMG_IMAGE_SERVER : Base URL for loading images in a NHTV message
+# VIMG_REMOTE_DEST  : Location to push images to
+#
+# Examples:
+# export VIMG_NRTOOL_KEY="nbh_draft_00112233445566778899aabbccddeeff"
+# export VIMG_IMAGE_SERVER="https://example.com/images/"
+# export VIMG_REMOTE_DEST="myfiles@example.com:/srv/www/example.com/shared/images/"
+
+: "${VIMG_NRTOOL_KEY:?VIMG_NRTOOL_KEY is not set}"
+: "${VIMG_IMAGE_SERVER:?VIMG_IMAGE_SERVER is not set}"
+: "${VIMG_REMOTE_DEST:?VIMG_REMOTE_DEST is not set}"
+
+err() { printf "%s\n" "$*" >&2; }
+
+gen_uuid() {
+  if command -v uuidgen >/dev/null 2>&1; then
+    uuidgen | tr 'A-Z' 'a-z'
+  elif [ -r /proc/sys/kernel/random/uuid ]; then
+    tr 'A-Z' 'a-z' </proc/sys/kernel/random/uuid
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 - <<'PY'
+import uuid
+print(uuid.uuid4())
+PY
+  elif command -v openssl >/dev/null 2>&1; then
+    # RFC4122-ish fallback
+    openssl rand -hex 16 | sed -E 's/^(.{8})(.{4})(.{4})(.{4})(.{12})$/\1-\2-\3-\4-\5/'
+  else
+    err "No UUID generator found (uuidgen/python3/openssl)."
+    exit 1
+  fi
+}
+
+# --- Validate input ---
+if [ $# -lt 1 ]; then
+  err "Usage: $0 \"movie.mp4\" [sc-name]"
+  exit 1
+fi
+
+in="$1"
+sc="${2:-}"
+if [ ! -f "$in" ]; then
+  err "Input file not found: $in"
+  exit 1
+fi
+
+case "${in##*.}" in
+  mp4|MP4) ;;
+  *) err "Input must be a .mp4 file"; exit 1 ;;
+esac
+
+# --- Check required tools ---
+for tool in vgif vgrid scp curl jq; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    err "Required command not found: $tool"
+    exit 1
+  fi
+done
+
+# --- Generate UUID and filenames ---
+uuid="$(gen_uuid)"
+gif="${uuid}.gif"
+jpg="${uuid}.jpg"
+
+# --- Upload MP4 to gofile.io ---
+echo "Uploading video to gofile.io..."
+gofile_response=$(curl -sS -X POST https://upload.gofile.io/uploadfile -F "file=@$in")
+gofile_url=$(printf '%s' "$gofile_response" | jq -r '.data.downloadPage // empty')
+if [ -z "$gofile_url" ]; then
+  err "gofile upload failed: $gofile_response"
+  exit 1
+fi
+echo "Video uploaded: $gofile_url"
+
+# --- Create assets quietly ---
+echo "Making GIF..."
+if ! vgif "$in" "$gif" >/dev/null 2>&1; then
+  err "vgif failed"
+  exit 1
+fi
+
+echo "Making contact sheet..."
+if ! vgrid "$in" "$jpg" >/dev/null 2>&1; then
+  err "vgrid failed"
+  exit 1
+fi
+
+# --- Upload both (quiet) ---
+echo "Uploading assets..."
+if ! scp -q "$gif" "$jpg" "${VIMG_REMOTE_DEST}" >/dev/null 2>&1; then
+  err "scp upload failed"
+  exit 1
+fi
+
+# --- Output BBCode links ---
+cb="${in%% *}"
+output=$(printf "[size=x-large][b][color=#FF851B]CB[/color]: [I][url=https://chaturbate.com/%s/]%s[/url][/I][/b][/size]" "$cb" "$cb")
+
+if [ -n "$sc" ]; then
+  output+=$(printf " - [size=x-large][b][color=#E82A1F]SC[/color]: [I][url=https://stripchat.com/%s]%s[/url][/I][/b][/size]" "$sc" "$sc")
+fi
+
+output+=$(printf "\n[IMG2]${VIMG_IMAGE_SERVER}%s[/IMG2]\n\n[IMG2]${VIMG_IMAGE_SERVER}%s[/IMG2]\n" "$jpg" "$gif")
+output+=$(printf "\nVideo clip at %s\n" "$gofile_url")
+
+json=$(jq -n \
+  --arg token "${VIMG_NRTOOL_KEY}" \
+  --argjson tid 14110 \
+  --arg subject "$cb" \
+  --arg message "$output" \
+  '{token:$token, tid:$tid, subject:$subject, message:$message}')
+
+echo "Creating draft post..."
+curl -sS -X POST "https://nobodyhome.ws/misc.php?action=draft_api_create" \
+    -H "Content-Type: application/json" \
+    --data "$json"
+echo "Done."

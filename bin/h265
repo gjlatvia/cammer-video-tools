@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+
+# h265 inputfile name keywords...
+
+# Example usage:
+#   h265 input.mp4 broadcaster_name keyword1 keyword2
+#
+# This will produce an output file named
+# "broadcaster_name keyword1 keyword2 20240612.mp4" (with the current date).
+#
+# e.g. I might use
+# h265 some-captured-file.mp4 holga_mertin sc spy boobs
+#
+# and get "holga_mertin sc spy boobs 20240612.mp4" as output.
+
+if [ "$#" -lt 2 ]; then
+    echo Usage: h265 inputfile roomname [keywords, ...]
+else
+    inputfile=$1
+    username=$2
+    shift
+    shift
+    keywords="$@"
+    now=$(date '+%Y%m%d')
+
+    if [[ "$keywords" =~ [[:space:]][0-9]{8}$ ]]; then
+        outputfile="$username $keywords.mp4"
+    else
+        outputfile="$username $keywords ${now}.mp4"
+    fi
+
+    if [ -e "${outputfile}" ]; then
+      echo "${outputfile} already exists"
+    else
+      HandbrakeCLI --input "${inputfile}" --output "${outputfile}" -Z "Hardware/H.265 Apple VideoToolbox 1080p"
+    fi
+fi

@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+
+# vgrid — make a tiled JPEG contact sheet from a video with timestamp + drop shadow
+# Usage:
+#   vgrid INPUT.mp4 [OUT.jpg] [cols] [rows] [cell_w] [cell_h] [margin] [padding] [fontsize] [rate]
+# Defaults:
+#   out="${base}.jpg", cols=4, rows=4, cell_w=320, cell_h=0 (auto), margin=8, padding=8, fontsize=0 (auto), rate=1
+
+set -euo pipefail
+
+err() { printf "%s\n" "$*" >&2; }
+need() { command -v "$1" >/dev/null 2>&1 || { err "Missing dependency: $1"; exit 127; }; }
+
+need ffmpeg
+
+in="${1-}"
+if [[ -z "${in}" || ! -f "${in}" ]]; then
+  err "videogrid_ts_shadow: please provide an input video file"
+  err "Usage: vgrid INPUT.mp4 [OUT.jpg] [cols] [rows] [cell_w] [cell_h] [margin] [padding] [fontsize]"
+  exit 2
+fi
+
+base="${in##*/}"; base="${base%.*}"
+out="${2:-${base}.jpg}"
+cols="${3:-4}"
+rows="${4:-4}"
+cell_w="${5:-320}"
+cell_h="${6:-0}"
+margin="${7:-8}"
+padding="${8:-8}"
+fontsize="${9:-0}"
+rate="${10:-1}"
+frames=$(( cols * rows ))
+
+# Auto fontsize if 0: ~8% of tile height (common sweet spot). If cell_h is 0 (auto),
+# we’ll pick a conservative fallback of 24.
+if [[ "${fontsize}" == "0" ]]; then
+  if [[ "${cell_h}" != "0" ]]; then
+    # integer math: (cell_h * 8) / 100
+    fontsize=$(( (cell_h * 8) / 100 ))
+    [[ "${fontsize}" -lt 12 ]] && fontsize=12
+  else
+    fontsize=24
+  fi
+fi
+
+# Duration-based sampling rate
+duration=$(ffprobe -v error -select_streams v:0 -show_entries format=duration \
+            -of default=nokey=1:noprint_wrappers=1 -- "$in" 2>/dev/null)
+if [[ -n "$duration" && "$duration" != "N/A" && $(awk -v d="$duration" 'BEGIN{print (d>0)?1:0}') -eq 1 ]]; then
+  rate=$(awk -v f="$frames" -v d="$duration" 'BEGIN { printf "%.8f", f/d }')
+else
+  rate="1"
+fi
+
+# Font selection: prefer Helvetica Neue on macOS Tahoe, otherwise fall back to default
+fontfile_mac="/System/Library/Fonts/HelveticaNeue.ttc"
+if [[ -f "${fontfile_mac}" ]]; then
+  fontopt="fontfile='${fontfile_mac}'"
+else
+  # Let libavfilter pick a default; you can customize to your system if you prefer
+  fontopt="font='Helvetica Neue'"
+fi
+
+# Timestamp HH:MM:SS (ffmpeg drawtext expression, needs escaping for bash)
+# %{
+#   eif:floor(t/3600):d:2
+# }:{
+#   eif:floor(mod(t\,3600)/60):d:2
+# }:{
+#   eif:mod(floor(t)\,60):d:2
+# }
+ts="\\%{eif\\:floor(t/3600)\\:d\\:2}\\:\\%{eif\\:floor(mod(t\\,3600)/60)\\:d\\:2}\\:\\%{eif\\:mod(floor(t)\\,60)\\:d\\:2}"
+
+# Two drawtext layers to create a soft drop shadow: black offset + white text
+shadow="drawtext=${fontopt}:text='${ts}':x=11:y=h-th-5:fontsize=${fontsize}:fontcolor=black@0.6"
+text="drawtext=${fontopt}:text='${ts}':x=8:y=h-th-8:fontsize=${fontsize}:fontcolor=white"
+
+# Build filter chain:
+#  - fps to sample frames evenly
+#  - scale to tile cell size (cell_h=0 keeps aspect with width fixed)
+#  - format to ensure drawtext compatibility
+#  - shadow + text overlays
+#  - tile into a grid
+vf="fps=${rate},scale=${cell_w}:${cell_h}:force_original_aspect_ratio=decrease,format=yuv420p,${shadow},${text},tile=${cols}x${rows}:margin=${margin}:padding=${padding}"
+
+# Encode a single JPEG frame (higher quality: smaller q is better; tweak if you like)
+# -huffman optimal improves baseline JPEG compression efficiency.
+ffmpeg -hide_banner -loglevel error -y \
+  -i "${in}" \
+  -vf "${vf}" \
+  -frames:v 1 \
+  -huffman optimal \
+  -q:v 5 \
+  -update 1 \
+  "${out}"
+
+printf '✅ Created %s\n' "${out}"
+

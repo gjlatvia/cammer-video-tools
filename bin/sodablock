@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+
+# Blocks out the area where the camsoda logo usually is.
+#
+# Arguably pointless, anyone seeing where the block is will know where this came from.
+#
+# Also, it's a fixed colour.  After all, taking the background into account will take 
+# colour from the logo and therefore be useless.
+#
+# Probably the least useful of my scripts, take it or leave it.
+
+local input="$1"
+
+if [[ -z "$input" ]]; then
+    echo "Usage: sodablock <input.mp4>" >&2
+    return 1
+fi
+
+if [[ ! -f "$input" ]]; then
+    echo "Error: file not found: $input" >&2
+    return 1
+fi
+
+local dir base ext output
+
+dir="$(dirname "$input")"
+base="$(basename "$input")"
+ext="${base##*.}"
+base="${base%.*}"
+
+output="${dir}/${base}-blocked.${ext}"
+
+ffmpeg -i "$input" \
+    -vf "scale=1280:720,drawbox=x=iw-210:y=12:w=200:h=80:color=0x006A4E:t=fill" \
+    -c:v h264_videotoolbox -b:v 6M \
+    -c:a copy \
+    "$output"
