@@ -70,35 +70,72 @@ uuid="$(gen_uuid)"
 gif="${uuid}.gif"
 jpg="${uuid}.jpg"
 
-# --- Upload MP4 to gofile.io ---
-echo "Uploading video to gofile.io..."
-gofile_response=$(curl -sS -X POST https://upload.gofile.io/uploadfile -F "file=@$in")
-gofile_url=$(printf '%s' "$gofile_response" | jq -r '.data.downloadPage // empty')
-if [ -z "$gofile_url" ]; then
-  err "gofile upload failed: $gofile_response"
-  exit 1
-fi
-echo "Video uploaded: $gofile_url"
+# --- Temp dir for inter-process results ---
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
 
-# --- Create assets quietly ---
-echo "Making GIF..."
-if ! vgif "$in" "$gif" >/dev/null 2>&1; then
-  err "vgif failed"
+# --- Process 1: Upload MP4 to gofile.io ---
+upload_video() {
+  echo "Uploading video to gofile.io..."
+  gofile_response=$(curl -sS -X POST https://upload.gofile.io/uploadfile -F "file=@$in")
+  gofile_url=$(printf '%s' "$gofile_response" | jq -r '.data.downloadPage // empty')
+  if [ -z "$gofile_url" ]; then
+    err "gofile upload failed: $gofile_response"
+    exit 1
+  fi
+  printf '%s' "$gofile_url" > "$tmpdir/gofile_url"
+  echo "Video uploaded: $gofile_url"
+}
+
+# --- Process 2: Build GIF and upload ---
+build_and_upload_gif() {
+  echo "Making GIF..."
+  if ! vgif "$in" "$gif" >/dev/null 2>&1; then
+    err "vgif failed"
+    exit 1
+  fi
+  echo "Uploading GIF..."
+  if ! scp -q "$gif" "${VIMG_REMOTE_DEST}" >/dev/null 2>&1; then
+    err "scp upload of GIF failed"
+    exit 1
+  fi
+  echo "GIF uploaded."
+}
+
+# --- Process 3: Build contact sheet and upload ---
+build_and_upload_sheet() {
+  echo "Making contact sheet..."
+  if ! vgrid "$in" "$jpg" >/dev/null 2>&1; then
+    err "vgrid failed"
+    exit 1
+  fi
+  echo "Uploading contact sheet..."
+  if ! scp -q "$jpg" "${VIMG_REMOTE_DEST}" >/dev/null 2>&1; then
+    err "scp upload of contact sheet failed"
+    exit 1
+  fi
+  echo "Contact sheet uploaded."
+}
+
+# --- Run all three in parallel ---
+upload_video        & pid_video=$!
+build_and_upload_gif   & pid_gif=$!
+build_and_upload_sheet & pid_sheet=$!
+
+# --- Wait for all; report any failures ---
+failed=0
+for pid in $pid_video $pid_gif $pid_sheet; do
+  if ! wait "$pid"; then
+    failed=1
+  fi
+done
+
+if [ $failed -ne 0 ]; then
+  err "One or more parallel tasks failed; aborting."
   exit 1
 fi
 
-echo "Making contact sheet..."
-if ! vgrid "$in" "$jpg" >/dev/null 2>&1; then
-  err "vgrid failed"
-  exit 1
-fi
-
-# --- Upload both (quiet) ---
-echo "Uploading assets..."
-if ! scp -q "$gif" "$jpg" "${VIMG_REMOTE_DEST}" >/dev/null 2>&1; then
-  err "scp upload failed"
-  exit 1
-fi
+gofile_url=$(cat "$tmpdir/gofile_url")
 
 # --- Output BBCode links ---
 cb="${in%% *}"
