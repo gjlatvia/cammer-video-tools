@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+
+# Usage: vjpg image1 [image2 ...]
+# Converts images to JPEG (or renames if already JPEG), uploads via scp,
+# and outputs BBCode [IMG2] tags.
+
+set -u
+
+: "${VIMG_IMAGE_SERVER:?VIMG_IMAGE_SERVER is not set}"
+: "${VIMG_REMOTE_DEST:?VIMG_REMOTE_DEST is not set}"
+
+err() { printf "%s\n" "$*" >&2; }
+
+gen_uuid() {
+  if command -v uuidgen >/dev/null 2>&1; then
+    uuidgen | tr 'A-Z' 'a-z'
+  elif [ -r /proc/sys/kernel/random/uuid ]; then
+    tr 'A-Z' 'a-z' </proc/sys/kernel/random/uuid
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 - <<'PY'
+import uuid
+print(uuid.uuid4())
+PY
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 16 | sed -E 's/^(.{8})(.{4})(.{4})(.{4})(.{12})$/\1-\2-\3-\4-\5/'
+  else
+    err "No UUID generator found (uuidgen/python3/openssl)."
+    exit 1
+  fi
+}
+
+if [ $# -lt 1 ]; then
+  err "Usage: $0 image1 [image2 ...]"
+  exit 1
+fi
+
+for tool in scp convert; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    err "Required command not found: $tool"
+    exit 1
+  fi
+done
+
+uuid="$(gen_uuid)"
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+
+index=1
+jpegs=()
+
+for src in "$@"; do
+  if [ ! -f "$src" ]; then
+    err "File not found: $src"
+    exit 1
+  fi
+
+  dest="${uuid}-${index}.jpg"
+
+  ext="${src##*.}"
+  case "$ext" in
+    jpg|JPG|jpeg|JPEG)
+      cp "$src" "$tmpdir/$dest"
+      ;;
+    *)
+      if ! convert "$src" "$tmpdir/$dest" 2>/dev/null; then
+        err "Failed to convert: $src"
+        exit 1
+      fi
+      ;;
+  esac
+
+  jpegs+=("$dest")
+  index=$(( index + 1 ))
+done
+
+echo "Uploading ${#jpegs[@]} file(s)..."
+if ! scp -q "${jpegs[@]/#/$tmpdir/}" "${VIMG_REMOTE_DEST}"; then
+  err "scp upload failed"
+  exit 1
+fi
+
+for name in "${jpegs[@]}"; do
+  printf "[IMG2]${VIMG_IMAGE_SERVER}%s[/IMG2]\n" "$name"
+done
