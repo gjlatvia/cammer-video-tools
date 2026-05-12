@@ -6,22 +6,22 @@
 # However, it might of course crop out content that you want to keep.  Use with caution.
 # It's arguably a bit flaky.
 
-local input="$1"
+input="$1"
 
 if [[ -z "$input" ]]; then
     echo "Usage: sodacrop <input.mp4>" >&2
-    return 1
+    exit 1
 fi
 
 if [[ ! -f "$input" ]]; then
     echo "Error: file not found: $input" >&2
-    return 1
+    exit 1
 fi
 
-local dir
-local base
-local ext
-local output
+dir=""
+base=""
+ext=""
+output=""
 
 dir="$(dirname "$input")"
 base="$(basename "$input")"
